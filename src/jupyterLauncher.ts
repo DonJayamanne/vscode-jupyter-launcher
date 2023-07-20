@@ -35,7 +35,6 @@ export async function launchJupyter(options: {
     type: JupyterType;
     token?: CancellationToken;
     customize?: boolean;
-    canGoBack?: boolean;
     displayOptionToIntegrateWithJupyter?: boolean;
     showProgress?: () => void;
 }): Promise<JupyterServer | undefined> {
@@ -386,6 +385,10 @@ async function getLaunchArgs(options: {
             previousSelections = [...quickPick.selectedItems];
         });
         const proceed = await new Promise<boolean>((resolve) => {
+            quickPick.onDidHide(() => {
+                quickPick.dispose();
+                resolve(false);
+            });
             quickPick.onDidTriggerButton(async (button) => {
                 if (button === QuickInputButtons.Back) {
                     resolve(false);

@@ -2,45 +2,55 @@
 // Licensed under the MIT License.
 
 import {
+    CancellationError,
     Disposable,
-    EventEmitter,
     Memento,
-    QuickPickItem,
+    QuickInputButtons,
+    QuickPickItemKind,
     Terminal,
-    extensions,
+    Uri,
     window,
 } from "vscode";
 import {
-    IJupyterServerUri,
-    IJupyterUriProvider,
-    JupyterAPI,
-    JupyterServerUriHandle,
+    JupyterServerCollection,
+    JupyterServerConnectionInformation,
 } from "./jupyter";
 import { OutputChannel } from "./helpers";
 import { JupyterServer, launchJupyter } from "./jupyterLauncher";
 
+type IJupyterServerUri = JupyterServerConnectionInformation & {
+    label: string;
+    pid: number;
+};
 const servers = new Map<
-    number,
-    { serverUri: IJupyterServerUri & Disposable; serverInfo: JupyterServer }
+    string,
+    {
+        serverUri: IJupyterServerUri;
+        disposables: Disposable[];
+    }
 >();
-const onDidChangeHandles = new EventEmitter<void>();
-let registered = false;
 
 export async function shutdownJupyterServer(terminal: Terminal) {
     const pid = await terminal.processId;
     if (!pid) {
         return;
     }
-    const server = servers.get(pid);
+    const server = servers.get(pid.toString());
     if (!server) {
         return;
     }
-    server.serverInfo.dispose();
-    servers.delete(pid);
-    onDidChangeHandles.fire();
+    server.disposables.forEach((d) => {
+        try {
+            d.dispose();
+        } catch {}
+    });
+    servers.delete(pid.toString());
 }
 
-export async function restoreJupyterServers(memento: Memento) {
+export async function restoreJupyterServers(
+    collection: JupyterServerCollection,
+    memento: Memento
+) {
     const terminalsByPid = new Map<number, Terminal>();
     await Promise.all(
         window.terminals.map(async (t) => {
@@ -60,184 +70,128 @@ export async function restoreJupyterServers(memento: Memento) {
         })
     );
 
-    let updated = false;
     (
         memento.get("jupyterServers", []) as {
             serverUri: IJupyterServerUri & Disposable;
             serverInfo: JupyterServer;
+            disposables: Disposable[];
         }[]
     ).forEach((server) => {
-        if (
-            !server?.serverInfo?.pid ||
-            !server?.serverUri ||
-            (!terminalsByPid.has(server.serverInfo.pid) &&
-                !servers.has(server.serverInfo.pid))
-        ) {
+        if (!server?.serverInfo?.pid || !server?.serverUri) {
             return;
         }
-        server.serverInfo.dispose = () =>
-            terminalsByPid.get(server.serverInfo.pid)?.dispose();
-        servers.set(server.serverInfo.pid, server);
+        if (servers.has(server.serverInfo.pid.toString())) {
+            return;
+        }
+        const terminal = terminalsByPid.get(server.serverInfo.pid);
+        if (!terminal) {
+            return;
+        }
+        server.serverInfo.dispose = () => {}; // This was in memento, hence not a valid fn.
+        const vscServer = collection.createServer(
+            server.serverInfo.pid.toString(),
+            server.serverUri.label,
+            async () => server.serverUri
+        );
+        server.disposables = [terminal, vscServer];
+        servers.set(server.serverInfo.pid.toString(), server);
     });
-
-    if (updated) {
-        onDidChangeHandles.fire();
-    }
 }
 async function storeJupyterServers(
     memento: Memento,
     server: {
-        serverUri: IJupyterServerUri & Disposable;
-        serverInfo: JupyterServer;
+        serverUri: IJupyterServerUri;
+        disposables: Disposable[];
     }
 ) {
     const servers = memento.get("jupyterServers", []) as {
-        serverUri: IJupyterServerUri & Disposable;
-        serverInfo: JupyterServer;
+        serverUri: IJupyterServerUri;
+        disposables: Disposable[];
     }[];
     servers.push(server);
-    await memento.update("jupyterServers", servers);
+    // Don't attempt to store disposables.
+    await memento.update(
+        "jupyterServers",
+        servers.map((s) => ({ ...s, disposables: [] }))
+    );
 }
-export function addJupyterServer(memento: Memento, server: JupyterServer) {
-    if (servers.has(server.pid)) {
+export function addJupyterServer(
+    collection: JupyterServerCollection,
+    memento: Memento,
+    server: JupyterServer
+) {
+    if (servers.has(server.pid.toString())) {
         OutputChannel.instance?.appendLine(
-            `[Warning]: Jupyter server already started for this workspace with information ${server.pid}.`
+            `[Warning]: Jupyter server already started for this workspace with pid ${server.pid}.`
         );
         return;
     }
     const jupyterServer: IJupyterServerUri = {
-        baseUrl: server.baseUrl,
+        pid: server.pid,
+        baseUrl: Uri.parse(server.baseUrl),
         token: server.token,
-        displayName: `${server.type} ${server.baseUrl}`,
+        label: `${server.type} ${server.baseUrl}`,
         mappedRemoteNotebookDir: server.jupyterExtensionWorkingDirectory,
         authorizationHeader: undefined,
     };
+    const vsCodeServer = collection.createServer(
+        server.pid.toString(),
+        `Jupyter Notebook at ${server.baseUrl}`,
+        async () => jupyterServer
+    );
     const details = {
-        serverInfo: server,
-        serverUri: {
-            ...jupyterServer,
-            dispose: () => server.dispose(),
-        },
+        serverUri: jupyterServer,
+        disposables: [server, vsCodeServer],
     };
 
     storeJupyterServers(memento, details);
-    servers.set(server.pid, details);
 
-    onDidChangeHandles.fire();
+    servers.set(server.pid.toString(), details);
+    return vsCodeServer;
 }
-export function registerProvider(memento: Memento) {
-    if (registered) {
-        return {
-            dispose: () => {
-                //
-            },
-        };
-    }
-    registered = true;
-    const uriProvider: IJupyterUriProvider = {
-        id: "jupyterLauncher",
-        getServerUri: function (handle: string): Promise<IJupyterServerUri> {
-            if (!servers.has(parseInt(handle, 10))) {
-                throw new Error("Invalid handle");
-            }
-            return Promise.resolve(
-                servers.get(parseInt(handle, 10))!.serverUri
-            );
-        },
-        displayName: "Local Jupyter Server",
-        getHandles: () => {
-            return Promise.resolve(
-                Array.from(servers.keys()).map((k) => k.toString())
-            );
-        },
-        onDidChangeHandles: onDidChangeHandles.event,
-        getQuickPickEntryItems: async () => {
-            return [
-                <QuickPickItem>{
-                    label: "Start New Jupyter Notebook Server",
-                },
-                <QuickPickItem>{
-                    label: "Start New Jupyter Lab Server",
-                },
-            ];
-        },
-        handleQuickPick: async (
-            item: QuickPickItem & { default?: boolean },
-            backEnabled
-        ) => {
-            if (!item) {
-                return;
-            }
-            const quickPick = window.createQuickPick();
-            quickPick.title = "Starting Jupyter Notebook";
-            const showProgress = () => {
-                quickPick.enabled = false;
-                quickPick.busy = true;
-                quickPick.show();
-            };
-            showProgress();
-            try {
-                if (
-                    item.label === "Start New Jupyter Notebook Server" &&
-                    item.default
-                ) {
-                    const server = await launchJupyter({
-                        type: "Jupyter Notebook",
-                        displayOptionToIntegrateWithJupyter: false,
-                        showProgress,
-                    });
-                    quickPick.hide();
-                    if (server) {
-                        addJupyterServer(memento, server);
-                        return server.pid.toString();
-                    }
-                } else if (item.label === "Start New Jupyter Notebook Server") {
-                    const server = await launchJupyter({
-                        type: "Jupyter Notebook",
-                        customize: true,
-                        canGoBack: backEnabled,
-                        displayOptionToIntegrateWithJupyter: false,
-                        showProgress,
-                    });
-                    if (server) {
-                        addJupyterServer(memento, server);
-                        return server.pid.toString();
-                    }
-                } else if (item.label === "Start New Jupyter Lab Server") {
-                    const server = await launchJupyter({
-                        type: "Jupyter Lab",
-                        customize: true,
-                        canGoBack: backEnabled,
-                        displayOptionToIntegrateWithJupyter: false,
-                        showProgress,
-                    });
-                    if (server) {
-                        addJupyterServer(memento, server);
-                        return server.pid.toString();
-                    }
-                }
-            } catch (ex) {
-                logAndDisplayError(ex);
-            } finally {
-                quickPick.hide();
-                quickPick.dispose();
-            }
-        },
-        removeHandle: async (handle: JupyterServerUriHandle) => {
-            servers.get(parseInt(handle, 10))?.serverInfo?.dispose();
-            servers.delete(parseInt(handle, 10));
-            onDidChangeHandles.fire();
-        },
+export function registerProvider(
+    collection: JupyterServerCollection,
+    memento: Memento
+) {
+    collection.createServerCreationItem(
+        "Start New Jupyter Notebook Server",
+        () => startJupyterServer("Jupyter Notebook", collection, memento)
+    );
+    collection.createServerCreationItem("Start New Jupyter Lab Server", () =>
+        startJupyterServer("Jupyter Lab", collection, memento)
+    );
+}
+
+async function startJupyterServer(
+    type: "Jupyter Lab" | "Jupyter Notebook",
+    collection: JupyterServerCollection,
+    memento: Memento
+) {
+    const quickPick = window.createQuickPick();
+    quickPick.title = "Starting Jupyter Notebook";
+    const showProgress = () => {
+        quickPick.enabled = false;
+        quickPick.busy = true;
+        quickPick.show();
     };
-
-    const api =
-        extensions.getExtension<JupyterAPI>("ms-toolsai.jupyter")?.exports;
-    if (!api) {
-        throw new Error("Jupyter extension not found");
+    showProgress();
+    try {
+        const server = await launchJupyter({
+            type,
+            customize: true,
+            displayOptionToIntegrateWithJupyter: false,
+            showProgress,
+        });
+        if (!server) {
+            throw new CancellationError();
+        }
+        return addJupyterServer(collection, memento, server);
+    } catch (ex) {
+        OutputChannel.instance?.appendLine(
+            `[Error]: Failed to start ${type}, ${ex}`
+        );
+    } finally {
+        quickPick.hide();
+        quickPick.dispose();
     }
-    api.registerRemoteServerProvider(uriProvider);
-    return onDidChangeHandles;
-}
-function logAndDisplayError(reason: any): PromiseLike<never> {
-    throw new Error("Function not implemented.");
 }

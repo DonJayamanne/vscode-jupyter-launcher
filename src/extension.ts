@@ -10,21 +10,33 @@ import {
     restoreJupyterServers,
     shutdownJupyterServer,
 } from "./jupyterIntegration";
+import { JupyterAPI } from "./jupyter";
 
+export async function activate(context: vscode.ExtensionContext) {
+    const api =
+        vscode.extensions.getExtension<JupyterAPI>(
+            "ms-toolsai.jupyter"
+        )?.exports;
+    if (!api) {
+        throw new Error("Jupyter extension not found");
+    }
+    const collection = await api.createServerCollection(
+        "jupyterLauncher",
+        "Local Jupyter Server"
+    );
 
-export function activate(context: vscode.ExtensionContext) {
     OutputChannel.instance =
         vscode.window.createOutputChannel("Jupyter Launcher");
     context.subscriptions.push(OutputChannel.instance);
-    context.subscriptions.push(registerProvider(context.workspaceState));
-    restoreJupyterServers(context.workspaceState);
+    registerProvider(collection, context.workspaceState);
+    restoreJupyterServers(collection, context.workspaceState);
     vscode.window.onDidChangeTerminalState(
-        () => restoreJupyterServers(context.workspaceState),
+        () => restoreJupyterServers(collection, context.workspaceState),
         undefined,
         context.subscriptions
     );
     vscode.window.onDidChangeActiveTerminal(
-        () => restoreJupyterServers(context.workspaceState),
+        () => restoreJupyterServers(collection, context.workspaceState),
         undefined,
         context.subscriptions
     );
@@ -41,7 +53,7 @@ export function activate(context: vscode.ExtensionContext) {
         }).catch(logAndDisplayError);
         if (serverInfo?.registerWithJupyterExtension) {
             context.subscriptions.push(serverInfo);
-            addJupyterServer(context.workspaceState, serverInfo);
+            addJupyterServer(collection, context.workspaceState, serverInfo);
         }
     };
     context.subscriptions.push(
@@ -63,4 +75,3 @@ export function deactivate() {}
 function logAndDisplayError(reason: any): PromiseLike<never> {
     throw new Error("Function not implemented.");
 }
-
