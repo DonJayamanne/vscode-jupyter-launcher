@@ -73,28 +73,26 @@ export async function restoreJupyterServers(
     (
         memento.get("jupyterServers", []) as {
             serverUri: IJupyterServerUri & Disposable;
-            serverInfo: JupyterServer;
             disposables: Disposable[];
         }[]
     ).forEach((server) => {
-        if (!server?.serverInfo?.pid || !server?.serverUri) {
+        if (!server?.serverUri?.pid) {
             return;
         }
-        if (servers.has(server.serverInfo.pid.toString())) {
+        if (servers.has(server.serverUri.pid.toString())) {
             return;
         }
-        const terminal = terminalsByPid.get(server.serverInfo.pid);
+        const terminal = terminalsByPid.get(server.serverUri.pid);
         if (!terminal) {
             return;
         }
-        server.serverInfo.dispose = () => {}; // This was in memento, hence not a valid fn.
         const vscServer = collection.createServer(
-            server.serverInfo.pid.toString(),
+            server.serverUri.pid.toString(),
             server.serverUri.label,
             async () => server.serverUri
         );
         server.disposables = [terminal, vscServer];
-        servers.set(server.serverInfo.pid.toString(), server);
+        servers.set(server.serverUri.pid.toString(), server);
     });
 }
 async function storeJupyterServers(
