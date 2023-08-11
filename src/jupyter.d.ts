@@ -1,12 +1,24 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { Disposable, Uri } from 'vscode';
+// API & types defined in this file are proposed and subject to change.
+// To use these types please reach out to the Jupyter Extension team (file an issue on the Jupyter Extension GitHub repo).
+// Or please wait for these to be finalized and released.
 
+import { CancellationToken } from "vscode";
+import { Command, Event, Uri } from "vscode";
+
+/**
+ * Provides information required to connect to a Jupyter Server.
+ */
 export interface JupyterServerConnectionInformation {
+    /**
+     * Base Url of the Jupyter Server.
+     * E.g. http://localhost:8888 or http://remoteServer.com/hub/user/, etc.
+     */
     readonly baseUrl: Uri;
     /**
-     * Jupyter auth Token
+     * Jupyter auth Token.
      */
     readonly token: string;
     /**
@@ -28,7 +40,7 @@ export interface JupyterServerConnectionInformation {
      * As a result when attempting to create a new session for a notebook/file, Jupyter will
      * first check if a session already exists for the same file and same kernel, and if so, will re-use that session.
      */
-    readonly mappedRemoteNotebookDir?: string;
+    readonly mappedRemoteNotebookDir?: Uri;
     /**
      * Returns the sub-protocols to be used. See details of `protocols` here https://developer.mozilla.org/en-US/docs/Web/API/WebSocket/WebSocket
      * Useful if there is a custom authentication scheme that needs to be used for WebSocket connections.
@@ -37,95 +49,91 @@ export interface JupyterServerConnectionInformation {
     readonly webSocketProtocols?: string[];
 }
 
-export interface JupyterServer extends Disposable {
-    readonly id: string;
+/**
+ * Represents a Jupyter Server displayed in the list of Servers.
+ */
+export interface JupyterServer {
     /**
-     * A human-readable string which is rendered prominent.
-     */
-    label: string;
-    resolveConnectionInformation: () => Promise<JupyterServerConnectionInformation>;
-}
-
-export class JupyterServerCreationItem extends Disposable {
-    /**
-     * A human-readable string which is rendered prominent. Supports rendering of {@link ThemeIcon theme icons} via
-     * the `$(<name>)`-syntax.
-     */
-    label: string;
-    /**
-     * A human-readable string which is rendered less prominent in a separate line. Supports rendering of
-     * {@link ThemeIcon theme icons} via the `$(<name>)`-syntax.
-     */
-    detail?: string;
-    /**
-     * A string that should be used when comparing this item
-     * with other items. When `falsy` the {@link JupyterServerCreationItem.label label}
-     * is used.
-     */
-    sortText?: string;
-    /**
-     * Optional flag indicating if this item is picked by default.
-     * If there are no existing servers, and this flag is true, then this item will be picked by default.
-     *
-     * Note: this property is ignored when {@link JupyterServerCollection.createServer createJupyterServer} has been called.
-     */
-    picked?: boolean;
-}
-
-export class JupyterServerCollection extends Disposable {
-    /**
-     * Identifier must be globally unique.
+     * Unique identifier for this server.
      */
     readonly id: string;
     /**
-     * A human-readable string which is rendered prominent.
+     * A human-readable string representing the name of the Server. This can be read and updated by the extension.
      */
     label: string;
     /**
-     * A link to a page providing more information to the user about this item.
+     * Returns the connection information for this server.
      */
-    documentation?: Uri;
-    /**
-     * Creates an entry in the list of Jupyter Servers from which the user can pick.
-     *
-     * @param {string} id
-     * @param {string} label
-     * @param {GetConnectionInformation} resolveConnectionInformation Gets the connection information for the Jupyter Server.
-     * @return {*}  {JupyterServer}
-     * @memberof JupyterServerCollection
-     */
-    createServer(
-        id: string,
-        label: string,
-        resolveConnectionInformation: () => Promise<JupyterServerConnectionInformation>
-    ): JupyterServer;
-    /**
-     * Creates an entry in the list of Jupyter Servers from which a user can pick to create a server.
-     * Picking an item is expected to result in the eventual creation of a JupyterServer.
-     * I.e. an extension is expected to listen to the `onDidSelect` event and optionally display their own UI and then create a JupyterServer.
-     *
-     * @param {string} label
-     * @param {() => Promise<JupyterServer | undefined>} onDidSelect Callback invoked when this item is selected.
-     * @return {*}  {JupyterServerPicker}
-     * @memberof JupyterServerCollection
-     */
-    createServerCreationItem(
-        label: string,
-        onDidSelect: () => Promise<JupyterServer | undefined>
-    ): JupyterServerCreationItem;
+    resolveConnectionInformation(
+        token: CancellationToken
+    ): Promise<JupyterServerConnectionInformation>;
 }
 
 /**
- * Sample usage extensions.getExtension<JupyterAPI>('ms-ai-tools.jupyter')?.exports;
+ * Provider of Jupyter Servers.
  */
+export interface JupyterServerProvider {
+    /**
+     * Event fired when the list of servers changes.
+     */
+    onDidChangeServers: Event<void>;
+    /**
+     * Returns the list of servers.
+     */
+    getJupyterServers(token: CancellationToken): Promise<JupyterServer[]>;
+}
+/**
+ * Provider of Jupyter Server Commands.
+ * Each command allows the user to perform an action.
+ * The return value of the command should be of the form Promise<JupyterServer | 'back' | undefined>
+ * The returned value have the following meaning:
+ * - JupyterServer  : The Jupyter Server object that was created
+ * - 'back'         : Go back to the previous screen
+ * - undefined|void : Do nothing
+ */
+export interface JupyterServerCommandProvider {
+    /**
+     * Default command to be used when there are no servers. This can be read and updated by the extension.
+     * If not set, and there are not servers, then the user will be prompted to select a command from a list of commands returned by `getCommands`.
+     */
+    selected?: Command;
+    /**
+     * Returns a list of commands to be displayed to the user.
+     */
+    getCommands(token: CancellationToken): Promise<Command[]>;
+}
+export interface JupyterServerCollection {
+    /**
+     * Unique identifier of the Server Collection.
+     */
+    readonly id: string;
+    /**
+     * A human-readable string representing the collection of the Servers. This can be read and updated by the extension.
+     */
+    label: string;
+    /**
+     * A link to a resource containing more information. This can be read and updated by the extension.
+     */
+    documentation?: Uri;
+    /**
+     * Provider of Jupyter Servers. This can be read and updated by the extension.
+     */
+    serverProvider?: JupyterServerProvider;
+    /**
+     * Provider of Commands. This can be read and updated by the extension.
+     */
+    commandProvider?: JupyterServerCommandProvider;
+    /**
+     * Removes this Server Collection.
+     */
+    dispose(): void;
+}
 export interface JupyterAPI {
     /**
-     * Provides the ability to register multiple collections of Jupyter Servers.
-     *
-     * @param {string} id Identifier must be globally unique.
-     * @param {string} label
-     * @return {*}  {JupyterServerCollection}
-     * @memberof JupyterAPI
+     * Creates a Jupyter Server Collection that can be displayed in the Notebook Kernel Picker.
      */
-    createServerCollection(id: string, label: string): Promise<JupyterServerCollection>;
+    createJupyterServerCollection(
+        id: string,
+        label: string
+    ): Promise<JupyterServerCollection>;
 }

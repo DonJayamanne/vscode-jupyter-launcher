@@ -20,7 +20,7 @@ export async function activate(context: vscode.ExtensionContext) {
     if (!api) {
         throw new Error("Jupyter extension not found");
     }
-    const collection = await api.createServerCollection(
+    const collection = await api.createJupyterServerCollection(
         "jupyterLauncher",
         "Local Jupyter Server"
     );

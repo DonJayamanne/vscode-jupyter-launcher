@@ -31,7 +31,8 @@ export type JupyterServer = {
     jupyterExtensionWorkingDirectory?: string;
 };
 
-export async function launchJupyter(options: {
+export async function
+launchJupyter(options: {
     type: JupyterType;
     token?: CancellationToken;
     customize?: boolean;
